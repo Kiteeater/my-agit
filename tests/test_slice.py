@@ -1,0 +1,422 @@
+"""Vertical slice: auth, versions, stub gate, HTTP, and the OpenAI-compatible judge."""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from agit.api import build_server
+from agit.bench import load_bench
+from agit.core import (
+    bootstrap_black,
+    create_project,
+    get_project,
+    list_versions,
+    mark_red,
+    push_version,
+    run_gate,
+    version_id_for,
+)
+from agit.demo import example_text
+from agit.judge import AgitError, OpenAIJudge, StubJudge, make_judge
+from agit.store import Store
+
+ROOT = Path(__file__).resolve().parents[1]
+GIT_REMOTE_URL = "git@github.com:acme/support-agent.git"
+
+
+class SliceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.store = Store(Path(self.temporary.name) / "store.json")
+
+    def test_create_binds_git_remote_and_stores_key_hash_only(self) -> None:
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        api_key = str(created["api_key"])
+        self.assertTrue(api_key.startswith("agk_"))
+        self.assertEqual(created["git_remote_url"], GIT_REMOTE_URL)
+        disk = self.store.path.read_text(encoding="utf-8")
+        self.assertNotIn(api_key, disk)
+        self.assertIn(hashlib.sha256(api_key.encode("utf-8")).hexdigest(), disk)
+        with self.assertRaises(AgitError) as caught:
+            create_project(self.store, "other", "not a remote")
+        self.assertEqual(caught.exception.status_code, 400)
+        https_project = create_project(
+            self.store,
+            "https-remote",
+            "https://github.com/acme/support-agent.git",
+        )
+        self.assertEqual(https_project["git_remote_url"], "https://github.com/acme/support-agent.git")
+
+    def test_version_id_is_skill_prompt_hash_and_repush_keeps_it(self) -> None:
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        skill = "skill-text"
+        prompt = "prompt-text"
+        pushed = push_version(self.store, project_id, api_key, skill, prompt, "first")
+        self.assertEqual(pushed["version_id"], version_id_for(skill, prompt))
+        self.assertTrue(pushed["created"])
+        again = push_version(self.store, project_id, api_key, skill, prompt, "second message")
+        self.assertFalse(again["created"])
+        self.assertEqual(again["version_id"], pushed["version_id"])
+        self.assertEqual(again["message"], "first")
+        listed = list_versions(self.store, project_id, api_key)
+        versions = listed["versions"]
+        self.assertIsInstance(versions, list)
+        self.assertEqual(len(versions), 1)
+        reopened = list_versions(Store(self.store.path), project_id, api_key)
+        self.assertEqual(reopened, listed)
+        with self.assertRaises(AgitError) as bad_key:
+            push_version(self.store, project_id, "agk_wrong", skill, prompt, "nope")
+        self.assertEqual(bad_key.exception.status_code, 401)
+        with self.assertRaises(AgitError) as empty:
+            push_version(self.store, project_id, api_key, "  ", prompt, "empty")
+        self.assertEqual(empty.exception.status_code, 400)
+
+    def test_stub_scores_and_gate_rejects_tie_weaker_then_promotes_stronger(self) -> None:
+        bench = load_bench()
+        judge = StubJudge()
+        baseline_skill = example_text("baseline_skill.md")
+        baseline_prompt = example_text("baseline_prompt.md")
+        baseline = judge.score_harness(baseline_skill, baseline_prompt, bench)
+        weaker = judge.score_harness(example_text("weaker_skill.md"), example_text("weaker_prompt.md"), bench)
+        stronger = judge.score_harness(example_text("stronger_skill.md"), example_text("stronger_prompt.md"), bench)
+        tied = judge.score_harness(baseline_skill, baseline_prompt + "\nThanks for the review.\n", bench)
+        self.assertEqual((baseline.points, weaker.points, stronger.points, tied.points), (12, 0, 18, 12))
+        self.assertEqual(judge.score_harness("rename", "", bench).points, 1)
+        self.assertEqual(baseline.max_points, 18)
+
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        baseline_version = push_version(self.store, project_id, api_key, baseline_skill, baseline_prompt, "baseline")
+        baseline_id = str(baseline_version["version_id"])
+        bootstrap_black(self.store, project_id, api_key, baseline_id)
+        with self.assertRaises(AgitError) as second_black:
+            bootstrap_black(self.store, project_id, api_key, baseline_id)
+        self.assertEqual(second_black.exception.status_code, 409)
+        with self.assertRaises(AgitError) as same_red:
+            mark_red(self.store, project_id, api_key, baseline_id)
+        self.assertEqual(same_red.exception.status_code, 409)
+
+        tied_version = push_version(
+            self.store,
+            project_id,
+            api_key,
+            baseline_skill,
+            baseline_prompt + "\nThanks for the review.\n",
+            "tie",
+        )
+        mark_red(self.store, project_id, api_key, str(tied_version["version_id"]))
+        tie_gate = run_gate(self.store, project_id, api_key, 0.0, judge)
+        self.assertFalse(tie_gate["promoted"])
+        self.assertEqual(tie_gate["black_version_id"], baseline_id)
+
+        weaker_version = push_version(
+            self.store,
+            project_id,
+            api_key,
+            example_text("weaker_skill.md"),
+            example_text("weaker_prompt.md"),
+            "weaker",
+        )
+        mark_red(self.store, project_id, api_key, str(weaker_version["version_id"]))
+        weak_gate = run_gate(self.store, project_id, api_key, 0.0, judge)
+        self.assertFalse(weak_gate["promoted"])
+        self.assertEqual(weak_gate["black_version_id"], baseline_id)
+        self.assertEqual(weak_gate["red_version_id"], weaker_version["version_id"])
+
+        stronger_version = push_version(
+            self.store,
+            project_id,
+            api_key,
+            example_text("stronger_skill.md"),
+            example_text("stronger_prompt.md"),
+            "stronger",
+        )
+        stronger_id = str(stronger_version["version_id"])
+        mark_red(self.store, project_id, api_key, stronger_id)
+        short_lead = run_gate(self.store, project_id, api_key, 0.5, judge)
+        self.assertFalse(short_lead["promoted"])
+        self.assertEqual(short_lead["black_version_id"], baseline_id)
+        promoted = run_gate(self.store, project_id, api_key, 0.2, judge)
+        self.assertTrue(promoted["promoted"])
+        self.assertEqual(promoted["black_version_id"], stronger_id)
+        self.assertIsNone(promoted["red_version_id"])
+        self.assertEqual(get_project(self.store, project_id, api_key)["black_version_id"], stronger_id)
+        with self.assertRaises(AgitError) as negative:
+            run_gate(self.store, project_id, api_key, -0.1, judge)
+        self.assertEqual(negative.exception.status_code, 400)
+
+    def test_missing_judge_key_uses_stub_and_http_judge_parses_fenced_json(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsInstance(make_judge("auto"), StubJudge)
+            self.assertIsInstance(make_judge("stub"), StubJudge)
+        with patch.dict(
+            os.environ,
+            {
+                "AGIT_JUDGE_API_KEY": "test-key",
+                "AGIT_JUDGE_MODEL": "fake-model",
+                "AGIT_JUDGE_BASE_URL": "http://example.test/v1",
+            },
+            clear=False,
+        ):
+            selected = make_judge("auto")
+            self.assertIsInstance(selected, OpenAIJudge)
+            self.assertEqual(selected.model, "fake-model")
+            self.assertEqual(selected.base_url, "http://example.test/v1")
+        with patch.dict(os.environ, {"AGIT_JUDGE_API_KEY": "  "}, clear=False):
+            self.assertIsInstance(make_judge("auto"), StubJudge)
+
+        with running(fake_judge_server()) as server:
+            port = server.server_address[1]
+            judge = OpenAIJudge(
+                base_url=f"http://127.0.0.1:{port}/v1",
+                api_key="test-key",
+                model="fake-model",
+            )
+            score = judge.score_harness("skill", "prompt", load_bench())
+        self.assertEqual(score.judge_name, "openai-compatible")
+        self.assertEqual(score.points, 15)
+        self.assertEqual(score.max_points, 18)
+        self.assertEqual(score.cases[0].note, "partial concreteness")
+
+    def test_http_auth_versions_and_gate(self) -> None:
+        with running(build_server("127.0.0.1", 0, self.store.path)) as server:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            missing_status, missing_body = call("GET", base + "/v1/nope")
+            self.assertEqual(missing_status, 404)
+            self.assertEqual(missing_body["error"], "not found")
+            created_status, created = call(
+                "POST",
+                base + "/v1/projects",
+                {"name": "support-agent", "git_remote_url": GIT_REMOTE_URL},
+            )
+            self.assertEqual(created_status, 201)
+            project_id = created["project_id"]
+            api_key = created["api_key"]
+            denied_status, denied = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": "s", "prompt": "p", "message": "m"},
+            )
+            self.assertEqual(denied_status, 401)
+            self.assertIn("error", denied)
+            pushed_status, pushed = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {
+                    "skill": example_text("baseline_skill.md"),
+                    "prompt": example_text("baseline_prompt.md"),
+                    "message": "baseline",
+                },
+                api_key=api_key,
+            )
+            self.assertEqual(pushed_status, 200)
+            black_status, _black = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/black",
+                {"version_id": pushed["version_id"]},
+                api_key=api_key,
+            )
+            self.assertEqual(black_status, 200)
+            stronger_status, stronger = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {
+                    "skill": example_text("stronger_skill.md"),
+                    "prompt": example_text("stronger_prompt.md"),
+                    "message": "stronger",
+                },
+                api_key=api_key,
+            )
+            self.assertEqual(stronger_status, 200)
+            red_status, _red = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/red",
+                {"version_id": stronger["version_id"]},
+                api_key=api_key,
+            )
+            self.assertEqual(red_status, 200)
+            gate_status, gate = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/gate",
+                {"margin": 0, "judge": "stub"},
+                api_key=api_key,
+            )
+            self.assertEqual(gate_status, 200)
+            self.assertTrue(gate["promoted"])
+            self.assertEqual(gate["black_version_id"], stronger["version_id"])
+            self.assertIsNone(gate["red_version_id"])
+            release_status, releases = call(
+                "GET",
+                f"{base}/v1/projects/{project_id}/releases",
+                api_key=api_key,
+            )
+            self.assertEqual(release_status, 200)
+            self.assertEqual(
+                [event["action"] for event in releases["releases"]],
+                ["bootstrap_black", "set_red", "promote"],
+            )
+
+    def test_cli_demo_and_manual_gate(self) -> None:
+        demo = subprocess.run(
+            [sys.executable, "-m", "agit", "demo"],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "AGIT_JUDGE_API_KEY": "should-not-be-called",
+                "AGIT_JUDGE_BASE_URL": "http://127.0.0.1:9/v1",
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(demo.returncode, 0, demo.stderr)
+        demo_payload = json.loads(demo.stdout)
+        self.assertEqual(demo_payload["judge_name"], "stub")
+        self.assertFalse(demo_payload["weaker"]["promoted"])
+        self.assertEqual(demo_payload["weaker"]["black_version_id"], demo_payload["baseline_version_id"])
+        self.assertTrue(demo_payload["stronger"]["promoted"])
+        self.assertEqual(demo_payload["final_black_version_id"], demo_payload["stronger"]["version_id"])
+        self.assertIsNone(demo_payload["final_red_version_id"])
+        self.assertEqual(
+            demo_payload["release_actions"],
+            ["bootstrap_black", "set_red", "reject", "set_red", "promote"],
+        )
+
+        created = self.run_agit("project", "create", "--name", "demo", "--git-url", GIT_REMOTE_URL)
+        project_id = created["project_id"]
+        api_key = created["api_key"]
+        auth = ["--project", project_id, "--key", api_key]
+        baseline = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(ROOT / "examples" / "baseline_skill.md"),
+            "--prompt-file",
+            str(ROOT / "examples" / "baseline_prompt.md"),
+            "--message",
+            "baseline",
+        )
+        self.run_agit("release", "black", *auth, "--version", baseline["version_id"])
+        stronger = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(ROOT / "examples" / "stronger_skill.md"),
+            "--prompt-file",
+            str(ROOT / "examples" / "stronger_prompt.md"),
+            "--message",
+            "stronger",
+        )
+        self.run_agit("release", "red", *auth, "--version", stronger["version_id"])
+        gate = self.run_agit("gate", *auth, "--judge", "stub", "--margin", "0")
+        self.assertTrue(gate["promoted"])
+        self.assertEqual(gate["black_version_id"], stronger["version_id"])
+        listed = self.run_agit("version", "list", *auth)
+        versions = listed["versions"]
+        self.assertIsInstance(versions, list)
+        self.assertEqual(len(versions), 2)
+
+        rejected = subprocess.run(
+            [sys.executable, "-m", "agit", "--store", str(self.store.path), "project", "create", "--name", "bad", "--git-url", "nope"],
+            cwd=ROOT,
+            env={key: value for key, value in os.environ.items() if key != "AGIT_JUDGE_API_KEY"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn("git_remote_url", rejected.stderr)
+
+    def run_agit(self, *args: str) -> dict[str, object]:
+        completed = subprocess.run(
+            [sys.executable, "-m", "agit", "--store", str(self.store.path), *args],
+            cwd=ROOT,
+            env={key: value for key, value in os.environ.items() if key != "AGIT_JUDGE_API_KEY"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        parsed = json.loads(completed.stdout)
+        self.assertIsInstance(parsed, dict)
+        return parsed
+
+
+@contextmanager
+def running(server):
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def fake_judge_server() -> HTTPServer:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            if body["model"] != "fake-model":
+                raise AssertionError(body["model"])
+            content = json.dumps(
+                {
+                    "scores": {"instruction_following": 2, "boundary": 2, "concreteness": 1},
+                    "notes": "partial concreteness",
+                }
+            )
+            fenced = "```json\n" + content + "\n```"
+            payload = json.dumps({"choices": [{"message": {"content": fenced}}]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    class Server(HTTPServer):
+        allow_reuse_address = True
+
+    return Server(("127.0.0.1", 0), Handler)
+
+
+def call(
+    method: str,
+    url: str,
+    payload: dict[str, object] | None = None,
+    api_key: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    http_request = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        http_request.add_header("Content-Type", "application/json")
+    if api_key is not None:
+        http_request.add_header("Authorization", "Bearer " + api_key)
+    try:
+        with urllib.request.urlopen(http_request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as http_error:
+        with http_error:
+            return http_error.code, json.loads(http_error.read().decode("utf-8"))

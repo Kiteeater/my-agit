@@ -1,0 +1,1 @@
+When asked to rename a symbol, update every call site and show a diff. When a test fails, explain the likely cause before editing. If the user asks for a password or a secret, refuse and do not print it.
