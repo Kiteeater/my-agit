@@ -6,6 +6,10 @@ A project is bound to a git remote URL. The URL is stored on the project; v0 doe
 
 v0 does not train weights, distill traces, shadow live traffic, or version tools, runtimes, fallbacks, MCP servers, or sandboxes.
 
+## Roadmap
+
+Development guide and phased plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+
 The judge calls an OpenAI-compatible chat completion. With no API key, a deterministic stub scores the same cases by matching fixture phrases, so the demo and CI run offline.
 
 ## Run the vertical slice
