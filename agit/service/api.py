@@ -77,6 +77,10 @@ def dispatch(
         return 200, list_versions(store, project_id, key)
     if tail == ["versions"] and method == "POST":
         payload = require_body(body)
+        if "tool" in payload:
+            tool = require_string(payload, "tool")
+        else:
+            tool = None
         return 200, push_version(
             store,
             project_id,
@@ -84,6 +88,7 @@ def dispatch(
             require_string(payload, "skill"),
             require_string(payload, "prompt"),
             require_string(payload, "message"),
+            tool=tool,
         )
     if len(tail) == 2 and tail[0] == "versions" and method == "GET":
         return 200, get_version(store, project_id, key, tail[1])

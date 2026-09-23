@@ -2,9 +2,9 @@
 
 my-agit is version control for an agent harness, plus a red/black release gate.
 
-A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores a harness. The live surface is two text artifacts, a skill and a prompt; a tool slot is reserved and the gate does not score it yet. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same fixture benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays.
+A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores a harness. Skill and prompt are the scored text. An optional tool text is stored on the same version when you pass it; the gate does not score the tool. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same fixture benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays.
 
-v0 does not train weights, distill traces, shadow live traffic, or version tools, runtimes, fallbacks, MCP servers, or sandboxes.
+v0 does not train weights, distill traces, shadow live traffic, or version runtimes, fallbacks, MCP servers, or sandboxes.
 
 ## Roadmap
 
@@ -21,7 +21,7 @@ python3 -m unittest discover -s tests -v
 python3 -m agit demo
 ```
 
-`agit demo` always uses the stub judge. It creates a project bound to `git@github.com:acme/support-agent.git`, marks a baseline skill and prompt black, rejects a weaker red candidate, then promotes a stronger one. It prints one JSON object.
+`agit demo` always uses the stub judge. It creates a project bound to `git@github.com:acme/support-agent.git`, marks a baseline skill and prompt black, rejects a weaker red candidate, then promotes a stronger one that carries a tool text. The gate still scores skill and prompt only. It prints one JSON object.
 
 The same path by hand, nine commands. Copy `project_id`, `api_key`, and `version_id` from each JSON response:
 
@@ -39,11 +39,13 @@ python3 -m agit release list
 
 `release black` only bootstraps the first live version. After that, black changes through `gate`. `compare` prints the same scores without changing the release.
 
+Optional tool on the same push: `python3 -m agit version push --skill-file examples/baseline_skill.md --prompt-file examples/baseline_prompt.md --tool-file examples/tool.txt --message "baseline with tool"`. Omit `--tool-file` and the version stays skill plus prompt.
+
 ## Auth and versions
 
 Mutating commands and project reads take the project API key (`--key` or `AGIT_API_KEY`) and project id (`--project` or `AGIT_PROJECT`). Create prints the key once. The store keeps only its SHA-256.
 
-The version id is the SHA-256 of the skill bytes, a NUL byte, and the prompt bytes when those are the only harness surfaces. Pushing the same pair again returns the stored version. A tool value is omitted from the id and from the store JSON until one is stored.
+The version id is the SHA-256 of the skill bytes, a NUL byte, and the prompt bytes when those are the only harness surfaces. Pushing the same content again returns the stored version. Omit the tool and it stays out of the id and the JSON. `--tool-file` on the CLI, or a `tool` string on HTTP push, stores that text and switches the id to a tagged digest of skill, prompt, and tool.
 
 The store file defaults to `.agit/store.json` (`--store` or `AGIT_STORE`).
 
@@ -86,7 +88,7 @@ python3 -m agit serve --host 127.0.0.1 --port 8787
 
 Create body: `{"name": "demo", "git_remote_url": "git@github.com:acme/support-agent.git"}`. The response includes `api_key`. Later requests send `Authorization: Bearer agk_...`.
 
-Version body: `{"skill": "...", "prompt": "...", "message": "..."}`.
+Version body: `{"skill": "...", "prompt": "...", "message": "..."}`. Add `"tool": "..."` to version that surface; omit the field to keep the skill/prompt version.
 
 Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional.
 
@@ -99,7 +101,7 @@ Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional.
 - `agit/judge/` — offline stub and OpenAI-compatible judge
 - `agit/service/` — CLI, HTTP, and demo
 - `agit/core.py`, `agit/store.py`, `agit/api.py`, `agit/cli.py`, `agit/demo.py` — compatibility imports (`agit.core` is deprecated)
-- `examples/` — skill and prompt files used by the demo
+- `examples/` — skill and prompt files used by the demo, and `tool.txt` for an optional tool push
 
 ## License
 

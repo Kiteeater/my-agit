@@ -365,6 +365,7 @@ class SliceTest(unittest.TestCase):
         self.assertFalse(demo_payload["weaker"]["promoted"])
         self.assertEqual(demo_payload["weaker"]["black_version_id"], demo_payload["baseline_version_id"])
         self.assertTrue(demo_payload["stronger"]["promoted"])
+        self.assertEqual(demo_payload["stronger"]["tool"], "echo")
         self.assertEqual(demo_payload["final_black_version_id"], demo_payload["stronger"]["version_id"])
         self.assertIsNone(demo_payload["final_red_version_id"])
         self.assertEqual(
@@ -418,6 +419,147 @@ class SliceTest(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 1)
         self.assertIn("git_remote_url", rejected.stderr)
+
+    def test_cli_push_tool_file_matches_biz_and_omit_keeps_shape(self) -> None:
+        skill_path = Path(self.temporary.name) / "skill.txt"
+        prompt_path = Path(self.temporary.name) / "prompt.txt"
+        tool_path = Path(self.temporary.name) / "tool.txt"
+        skill = "skill-text"
+        prompt = "prompt-text"
+        tool = "echo"
+        skill_path.write_text(skill, encoding="utf-8")
+        prompt_path.write_text(prompt, encoding="utf-8")
+        tool_path.write_text(tool, encoding="utf-8")
+        created = self.run_agit("project", "create", "--name", "demo", "--git-url", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        auth = ["--project", project_id, "--key", api_key]
+        plain = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--message",
+            "plain",
+        )
+        self.assertNotIn("tool", plain)
+        self.assertEqual(plain["version_id"], version_id_for(Harness(skill=skill, prompt=prompt)))
+        self.assertTrue(plain["created"])
+        plain_again = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--message",
+            "plain again",
+        )
+        self.assertFalse(plain_again["created"])
+        self.assertEqual(plain_again["version_id"], plain["version_id"])
+        self.assertNotIn("tool", plain_again)
+        with_tool = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--tool-file",
+            str(tool_path),
+            "--message",
+            "with tool",
+        )
+        self.assertEqual(with_tool["tool"], tool)
+        self.assertEqual(with_tool["version_id"], version_id_for(Harness(skill=skill, prompt=prompt, tool=tool)))
+        self.assertNotEqual(with_tool["version_id"], plain["version_id"])
+        self.assertTrue(with_tool["created"])
+        tool_again = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--tool-file",
+            str(tool_path),
+            "--message",
+            "with tool again",
+        )
+        self.assertFalse(tool_again["created"])
+        self.assertEqual(tool_again["version_id"], with_tool["version_id"])
+        self.assertEqual(tool_again["message"], "with tool")
+
+    def test_http_push_tool_matches_biz_and_omit_keeps_shape(self) -> None:
+        skill = "skill-text"
+        prompt = "prompt-text"
+        tool = "echo"
+        with running(build_server("127.0.0.1", 0, self.store.path)) as server:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            created_status, created = call(
+                "POST",
+                base + "/v1/projects",
+                {"name": "support-agent", "git_remote_url": GIT_REMOTE_URL},
+            )
+            self.assertEqual(created_status, 201)
+            project_id = created["project_id"]
+            api_key = str(created["api_key"])
+            plain_status, plain = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": skill, "prompt": prompt, "message": "plain"},
+                api_key=api_key,
+            )
+            self.assertEqual(plain_status, 200)
+            self.assertNotIn("tool", plain)
+            self.assertEqual(plain["version_id"], version_id_for(Harness(skill=skill, prompt=prompt)))
+            self.assertTrue(plain["created"])
+            again_status, plain_again = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": skill, "prompt": prompt, "message": "plain again"},
+                api_key=api_key,
+            )
+            self.assertEqual(again_status, 200)
+            self.assertFalse(plain_again["created"])
+            self.assertEqual(plain_again["version_id"], plain["version_id"])
+            self.assertNotIn("tool", plain_again)
+            tool_status, with_tool = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": skill, "prompt": prompt, "message": "with tool", "tool": tool},
+                api_key=api_key,
+            )
+            self.assertEqual(tool_status, 200)
+            self.assertEqual(with_tool["tool"], tool)
+            self.assertEqual(with_tool["version_id"], version_id_for(Harness(skill=skill, prompt=prompt, tool=tool)))
+            self.assertNotEqual(with_tool["version_id"], plain["version_id"])
+            self.assertTrue(with_tool["created"])
+            repush_status, tool_again = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": skill, "prompt": prompt, "message": "with tool again", "tool": tool},
+                api_key=api_key,
+            )
+            self.assertEqual(repush_status, 200)
+            self.assertFalse(tool_again["created"])
+            self.assertEqual(tool_again["version_id"], with_tool["version_id"])
+            self.assertEqual(tool_again["message"], "with tool")
+            bad_status, bad = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/versions",
+                {"skill": skill, "prompt": prompt, "message": "bad tool", "tool": 1},
+                api_key=api_key,
+            )
+            self.assertEqual(bad_status, 400)
+            self.assertIn("error", bad)
 
     def run_agit(self, *args: str) -> dict[str, object]:
         completed = subprocess.run(

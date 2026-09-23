@@ -10,8 +10,8 @@ ReleaseAction = Literal["bootstrap_black", "set_red", "promote", "reject"]
 class Harness:
     """Agent harness.
 
-    Skill and prompt are the live surfaces. tool is a slot for a later
-    surface: None means that surface is not part of this harness.
+    Skill and prompt are always present. tool is optional: None means
+    that surface is not part of this harness.
     """
 
     skill: str
