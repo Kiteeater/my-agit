@@ -28,6 +28,7 @@ from agit.core import (
     version_id_for,
 )
 from agit.demo import example_text
+from agit.domain import Harness
 from agit.judge import AgitError, OpenAIJudge, StubJudge, make_judge
 from agit.store import Store
 
@@ -65,8 +66,11 @@ class SliceTest(unittest.TestCase):
         api_key = str(created["api_key"])
         skill = "skill-text"
         prompt = "prompt-text"
+        legacy_id = hashlib.sha256(skill.encode("utf-8") + b"\0" + prompt.encode("utf-8")).hexdigest()
         pushed = push_version(self.store, project_id, api_key, skill, prompt, "first")
-        self.assertEqual(pushed["version_id"], version_id_for(skill, prompt))
+        self.assertEqual(pushed["version_id"], legacy_id)
+        self.assertEqual(pushed["version_id"], version_id_for(Harness(skill=skill, prompt=prompt)))
+        self.assertNotIn("tool", pushed)
         self.assertTrue(pushed["created"])
         again = push_version(self.store, project_id, api_key, skill, prompt, "second message")
         self.assertFalse(again["created"])
@@ -85,17 +89,87 @@ class SliceTest(unittest.TestCase):
             push_version(self.store, project_id, api_key, "  ", prompt, "empty")
         self.assertEqual(empty.exception.status_code, 400)
 
+    def test_old_store_json_loads_and_tool_slot_changes_only_its_own_id(self) -> None:
+        skill = "legacy-skill"
+        prompt = "legacy-prompt"
+        version_id = hashlib.sha256(skill.encode("utf-8") + b"\0" + prompt.encode("utf-8")).hexdigest()
+        api_key = "agk_old"
+        record = {
+            "projects": {
+                "proj_old": {
+                    "api_key_sha256": hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
+                    "black_version_id": None,
+                    "created_at": "2020-01-01T00:00:00Z",
+                    "git_remote_url": GIT_REMOTE_URL,
+                    "name": "old",
+                    "project_id": "proj_old",
+                    "red_version_id": None,
+                    "releases": [],
+                    "versions": {
+                        version_id: {
+                            "created_at": "2020-01-01T00:00:00Z",
+                            "message": "legacy",
+                            "prompt": prompt,
+                            "skill": skill,
+                            "version_id": version_id,
+                        }
+                    },
+                }
+            }
+        }
+        self.store.path.write_text(json.dumps(record), encoding="utf-8")
+        loaded = self.store.read()["proj_old"].versions[version_id]
+        self.assertEqual(loaded.harness.skill, skill)
+        self.assertEqual(loaded.harness.prompt, prompt)
+        self.assertIsNone(loaded.harness.tool)
+        listed = list_versions(self.store, "proj_old", api_key)
+        versions = listed["versions"]
+        self.assertIsInstance(versions, list)
+        self.assertNotIn("tool", versions[0])
+        self.assertEqual(versions[0]["version_id"], version_id)
+
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        rewritten = json.loads(self.store.path.read_text(encoding="utf-8"))
+        legacy_version = rewritten["projects"]["proj_old"]["versions"][version_id]
+        self.assertEqual(set(legacy_version.keys()), {"version_id", "skill", "prompt", "message", "created_at"})
+
+        project_id = str(created["project_id"])
+        project_key = str(created["api_key"])
+        with_tool = push_version(self.store, project_id, project_key, skill, prompt, "tool slot", tool="echo")
+        self.assertEqual(with_tool["tool"], "echo")
+        self.assertNotEqual(with_tool["version_id"], version_id)
+        extended_id = hashlib.sha256(
+            b"skill\0" + skill.encode("utf-8") + b"\0prompt\0" + prompt.encode("utf-8") + b"\0tool\0" + b"echo"
+        ).hexdigest()
+        self.assertEqual(with_tool["version_id"], extended_id)
+        self.assertEqual(with_tool["version_id"], version_id_for(Harness(skill=skill, prompt=prompt, tool="echo")))
+        stored = Store(self.store.path).read()[project_id].versions[str(with_tool["version_id"])]
+        self.assertEqual(stored.harness.tool, "echo")
+
     def test_stub_scores_and_gate_rejects_tie_weaker_then_promotes_stronger(self) -> None:
         bench = load_bench()
         judge = StubJudge()
         baseline_skill = example_text("baseline_skill.md")
         baseline_prompt = example_text("baseline_prompt.md")
-        baseline = judge.score_harness(baseline_skill, baseline_prompt, bench)
-        weaker = judge.score_harness(example_text("weaker_skill.md"), example_text("weaker_prompt.md"), bench)
-        stronger = judge.score_harness(example_text("stronger_skill.md"), example_text("stronger_prompt.md"), bench)
-        tied = judge.score_harness(baseline_skill, baseline_prompt + "\nThanks for the review.\n", bench)
+        baseline = judge.score_harness(Harness(skill=baseline_skill, prompt=baseline_prompt), bench)
+        weaker = judge.score_harness(
+            Harness(skill=example_text("weaker_skill.md"), prompt=example_text("weaker_prompt.md")),
+            bench,
+        )
+        stronger = judge.score_harness(
+            Harness(skill=example_text("stronger_skill.md"), prompt=example_text("stronger_prompt.md")),
+            bench,
+        )
+        tied = judge.score_harness(
+            Harness(skill=baseline_skill, prompt=baseline_prompt + "\nThanks for the review.\n"),
+            bench,
+        )
         self.assertEqual((baseline.points, weaker.points, stronger.points, tied.points), (12, 0, 18, 12))
-        self.assertEqual(judge.score_harness("rename", "", bench).points, 1)
+        self.assertEqual(judge.score_harness(Harness(skill="rename", prompt=""), bench).points, 1)
+        self.assertEqual(
+            judge.score_harness(Harness(skill="no", prompt="no", tool="rename call site"), bench).points,
+            0,
+        )
         self.assertEqual(baseline.max_points, 18)
 
         created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
@@ -187,7 +261,7 @@ class SliceTest(unittest.TestCase):
                 api_key="test-key",
                 model="fake-model",
             )
-            score = judge.score_harness("skill", "prompt", load_bench())
+            score = judge.score_harness(Harness(skill="skill", prompt="prompt"), load_bench())
         self.assertEqual(score.judge_name, "openai-compatible")
         self.assertEqual(score.points, 15)
         self.assertEqual(score.max_points, 18)

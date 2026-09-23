@@ -2,13 +2,13 @@
 
 my-agit is version control for an agent harness, plus a red/black release gate.
 
-A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores two text artifacts: a skill and a prompt. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same fixture benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays.
+A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores a harness. The live surface is two text artifacts, a skill and a prompt; a tool slot is reserved and the gate does not score it yet. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same fixture benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays.
 
 v0 does not train weights, distill traces, shadow live traffic, or version tools, runtimes, fallbacks, MCP servers, or sandboxes.
 
 ## Roadmap
 
-Development guide and phased plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+Development guide and phased plan: [docs/ROADMAP.md](docs/ROADMAP.md). Layering: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 The judge calls an OpenAI-compatible chat completion. With no API key, a deterministic stub scores the same cases by matching fixture phrases, so the demo and CI run offline.
 
@@ -43,7 +43,7 @@ python3 -m agit release list
 
 Mutating commands and project reads take the project API key (`--key` or `AGIT_API_KEY`) and project id (`--project` or `AGIT_PROJECT`). Create prints the key once. The store keeps only its SHA-256.
 
-The version id is the SHA-256 of the skill bytes, a NUL byte, and the prompt bytes. Pushing the same pair again returns the stored version.
+The version id is the SHA-256 of the skill bytes, a NUL byte, and the prompt bytes when those are the only harness surfaces. Pushing the same pair again returns the stored version. A tool value is omitted from the id and from the store JSON until one is stored.
 
 The store file defaults to `.agit/store.json` (`--store` or `AGIT_STORE`).
 
@@ -92,12 +92,13 @@ Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional.
 
 ## Layout
 
-- `agit/store.py` — JSON project store and release history
-- `agit/core.py` — versions and the red/black gate
-- `agit/bench.py` — fixture bench and rubric (`agit/fixtures.json`)
-- `agit/judge.py` — offline stub and OpenAI-compatible judge
-- `agit/api.py` — HTTP
-- `agit/cli.py` — CLI (`python3 -m agit`)
+- `agit/domain/` — Project, Version, Harness, ReleaseEvent
+- `agit/data/` — JSON store and serialization
+- `agit/biz/` — project, version, and release rules
+- `agit/bench/` — fixture bench and rubric (`agit/fixtures.json`)
+- `agit/judge/` — offline stub and OpenAI-compatible judge
+- `agit/service/` — CLI, HTTP, and demo
+- `agit/core.py`, `agit/store.py`, `agit/api.py`, `agit/cli.py`, `agit/demo.py` — compatibility imports (`agit.core` is deprecated)
 - `examples/` — skill and prompt files used by the demo
 
 ## License
