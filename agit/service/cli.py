@@ -10,7 +10,7 @@ from agit.biz.project import create_project
 from agit.biz.release import bootstrap_black, compare_red_black, list_releases, mark_red, run_gate
 from agit.biz.version import get_version, list_versions, push_version
 from agit.data.store import DEFAULT_STORE_PATH, Store
-from agit.judge import AgitError, make_judge
+from agit.judge import JUDGE_MODES, AgitError, make_judge
 from agit.service.api import DEFAULT_HOST, DEFAULT_PORT, serve
 from agit.service.demo import run_demo
 
@@ -61,10 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     release_commands.add_parser("list", parents=[auth])
 
     compare = commands.add_parser("compare", parents=[auth])
-    compare.add_argument("--judge", choices=("auto", "stub"), default="auto")
+    compare.add_argument("--judge", choices=JUDGE_MODES, default="auto")
     gate = commands.add_parser("gate", parents=[auth])
     gate.add_argument("--margin", type=float, default=0.0)
-    gate.add_argument("--judge", choices=("auto", "stub"), default="auto")
+    gate.add_argument("--judge", choices=JUDGE_MODES, default="auto")
 
     server = commands.add_parser("serve")
     server.add_argument("--host", default=DEFAULT_HOST)

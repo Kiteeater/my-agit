@@ -1,11 +1,14 @@
-"""Score a harness with the offline stub or an OpenAI-compatible judge.
+"""Score a harness through Judge.score_harness.
 
-The live path scores skill and prompt. Other harness slots are ignored.
+Implementations are the offline stub, the offline fixed judge, and an
+OpenAI-compatible chat completion. Scoring reads skill and prompt.
+Other harness slots are ignored.
 """
 
 import json
 import os
 from dataclasses import dataclass
+from typing import Protocol
 from urllib import error, request
 
 from agit.bench import FULL_POINTS, Bench, BenchCase, RubricCriterion
@@ -16,6 +19,7 @@ ENV_API_KEY = "AGIT_JUDGE_API_KEY"
 ENV_MODEL = "AGIT_JUDGE_MODEL"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+JUDGE_MODES = ("auto", "stub", "fixed")
 JUDGE_TIMEOUT_SECONDS = 60
 JUDGE_MAX_TOKENS = 400
 
@@ -89,23 +93,37 @@ class HarnessScore:
         }
 
 
-def make_judge(mode: str) -> "StubJudge | OpenAIJudge":
-    """Pick the stub, or the HTTP judge when an API key is configured."""
+class Judge(Protocol):
+    def score_harness(self, harness: Version | Harness, bench: Bench) -> HarnessScore:
+        """Score skill and prompt on one bench."""
+
+
+def make_judge(mode: str) -> Judge:
+    """Return the named judge. auto keeps the stub unless an API key is set."""
     if mode == "stub":
         return StubJudge()
+    if mode == "fixed":
+        return FixedJudge()
     if mode != "auto":
-        raise AgitError("judge must be auto or stub", 400)
+        known = ", ".join(JUDGE_MODES)
+        raise AgitError(f"unknown judge {mode}; choose {known}", 400)
     api_key = os.environ.get(ENV_API_KEY, "").strip()
     if api_key == "":
         return StubJudge()
     configured_base_url = os.environ.get(ENV_BASE_URL, "").strip()
-    base_url = configured_base_url if configured_base_url != "" else DEFAULT_BASE_URL
+    if configured_base_url == "":
+        base_url = DEFAULT_BASE_URL
+    else:
+        base_url = configured_base_url
     configured_model = os.environ.get(ENV_MODEL, "").strip()
-    model = configured_model if configured_model != "" else DEFAULT_MODEL
+    if configured_model == "":
+        model = DEFAULT_MODEL
+    else:
+        model = configured_model
     return OpenAIJudge(base_url=base_url, api_key=api_key, model=model)
 
 
-class StubJudge:
+class StubJudge(Judge):
     """Score fixture phrases so the gate runs with no network and no API key.
 
     All phrases for a criterion score 2, some score 1, and none score 0.
@@ -166,7 +184,49 @@ class StubJudge:
         )
 
 
-class OpenAIJudge:
+class FixedJudge(Judge):
+    """Offline length bands, independent of fixture phrases.
+
+    Each criterion scores (len(skill) + len(prompt)) % (FULL_POINTS + 1).
+    The same text always gets the same points. Length counts skill and
+    prompt only, so the optional tool slot stays outside the score.
+    """
+
+    name = "fixed"
+    model = None
+
+    def score_harness(self, harness: Version | Harness, bench: Bench) -> HarnessScore:
+        body = as_harness(harness)
+        band = (len(body.skill) + len(body.prompt)) % (FULL_POINTS + 1)
+        cases: list[CaseScore] = []
+        for case in bench.cases:
+            criterion_scores = [
+                CriterionScore(
+                    criterion_id=criterion.criterion_id,
+                    points=band,
+                    max_points=criterion.max_points,
+                )
+                for criterion in bench.criteria
+            ]
+            cases.append(
+                CaseScore(
+                    case_id=case.case_id,
+                    points=sum(item.points for item in criterion_scores),
+                    max_points=sum(item.max_points for item in criterion_scores),
+                    note=f"length band {band}",
+                    criteria=criterion_scores,
+                )
+            )
+        return HarnessScore(
+            judge_name=self.name,
+            model=self.model,
+            points=sum(case.points for case in cases),
+            max_points=sum(case.max_points for case in cases),
+            cases=cases,
+        )
+
+
+class OpenAIJudge(Judge):
     """Chat-completions client. base_url is the API root, including /v1 when required."""
 
     name = "openai-compatible"
