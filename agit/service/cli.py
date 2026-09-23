@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from agit.bench import FIXTURE_BENCH
 from agit.biz.project import create_project
 from agit.biz.release import bootstrap_black, compare_red_black, list_releases, mark_red, run_gate
 from agit.biz.version import get_version, list_versions, push_version
@@ -62,9 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     compare = commands.add_parser("compare", parents=[auth])
     compare.add_argument("--judge", choices=JUDGE_MODES, default="auto")
+    compare.add_argument("--bench", default=FIXTURE_BENCH)
     gate = commands.add_parser("gate", parents=[auth])
     gate.add_argument("--margin", type=float, default=0.0)
     gate.add_argument("--judge", choices=JUDGE_MODES, default="auto")
+    gate.add_argument("--bench", default=FIXTURE_BENCH)
 
     server = commands.add_parser("serve")
     server.add_argument("--host", default=DEFAULT_HOST)
@@ -108,9 +111,9 @@ def execute(args: argparse.Namespace) -> dict[str, object] | None:
     if args.command == "release" and args.release_command == "list":
         return list_releases(store, project_id, api_key)
     if args.command == "compare":
-        return compare_red_black(store, project_id, api_key, make_judge(args.judge))
+        return compare_red_black(store, project_id, api_key, make_judge(args.judge), args.bench)
     if args.command == "gate":
-        return run_gate(store, project_id, api_key, args.margin, make_judge(args.judge))
+        return run_gate(store, project_id, api_key, args.margin, make_judge(args.judge), args.bench)
     raise AgitError("unknown command", 400)
 
 

@@ -50,9 +50,10 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 - 项目：create、绑定 git remote URL、签发 API key。URL 存在项目上；v0 不 clone 该仓库。
 - 版本对象：skill、prompt，以及可选的 tool。只有 skill 和 prompt 时，版本 id 是这两段文本的内容哈希，同一内容再次 push 返回已有版本，JSON 不写 `tool` 键。CLI `--tool-file` 或 HTTP 字段 `tool` 传入非空文本后，tool 进入内容哈希和 JSON。门禁仍只消费分数。
 - 红黑与门禁：`release black` 只引导第一个现役版本，之后 black 只能经 `gate` 改变。内置 fixture bench + rubric。评分走 `Judge` 协议：stub、fixed，或 OpenAI-compatible chat completion（LLM-as-judge）。`compare` / `gate` 只消费 `HarnessScore`。候选分必须严格更高，且领先不少于配置的 margin，才提升；否则 black 不动，候选保持 red。
+- Benchmark：`load_bench` 默认仍读内置 `agit/fixtures.json`。注册名 `hot` 读包内最小样例。传入已存在的文件路径则加载同构 JSON。CLI `--bench` 与 HTTP 字段 `bench` 选择这一次 compare / gate 用的 bench。门禁仍只消费分数。
 - 入口：CLI、HTTP、`agit demo`、单元测试。
 
-v0 明确还没有：runtime / fallback / mcp / sandbox 的字段和版本化；自定义 bench 或热门 bench；线上 case 回收。需要网络的 judge 仍只有 OpenAI-compatible 这一家。
+v0 明确还没有：runtime / fallback / mcp / sandbox 的字段和版本化；线上 case 回收。需要网络的 judge 仍只有 OpenAI-compatible 这一家。
 
 ## 阶段
 
@@ -78,11 +79,15 @@ runtime、fallback、mcp、sandbox 仍未做。先做哪一个、各子面的产
 2. **配置方式**。仍用 `make_judge(mode)`。CLI `--judge` 和 HTTP 字段 `judge` 可选 `auto`、`stub`、`fixed`。`auto`：设置了 `AGIT_JUDGE_API_KEY` 时用 OpenAI-compatible，否则 stub。OpenAI 的 base、model、key 仍由环境变量配置。
 3. **第二家**。`fixed`：确定性、无网络。每个准则的分数是 skill 与 prompt 的字符数之和模 3（0、1 或 2），同一文本分数稳定，和 stub 的短语匹配不同。OpenAI-compatible 仍是唯一需要网络和 key 的实现。
 
-### 随后 — benchmark 插件
+### Done — benchmark 插件
 
-在内置 fixture bench 之外，支持自定义 bench，并至少接入 1 个热门 bench。rubric 仍由使用方定好，评分仍走 LLM-as-judge（或 stub 这类离线对照）。
+在内置 fixture bench 之外，可以换一套题目和 rubric。评分仍走 `Judge`（stub、fixed，或 OpenAI-compatible）。`compare` / `gate` 只消费 `HarnessScore`，不读取某个 bench 的 case 细节。不在此阶段改成线上 case。
 
-热门 bench 选哪一个、自定义 bench 的装载格式，均为 **Open**。不在此阶段改成线上 case。
+三项选择 **已选**：
+
+1. **装载格式**。自定义 bench 是与 `agit/fixtures.json` 同构的 JSON（`rubric`、`cases`、`checks`），通过文件路径加载。每条准则的 `max_points` 仍是 2。
+2. **热门 bench**。内置注册名 `hot`，资源是 `agit/hot_fixtures.json`，两个 case 的最小样例。这是热门 bench 的接入位，不是完整公开榜单重放。不下载外部数据集，不新增依赖。
+3. **选择方式**。`load_bench(spec)`：省略或 `fixture` 用内置 fixtures；`hot` 用内置样例；spec 是已存在的文件路径则按该 JSON 加载；其余名字抛出 `AgitError`。`fixture` 与 `hot` 优先于同名文件。CLI `compare` / `gate` 的 `--bench` 默认 `fixture`。HTTP compare / gate 请求体可选字符串 `bench`，语义相同。demo 仍用默认 fixture。
 
 ### 随后 — 平台多项目
 

@@ -1,4 +1,4 @@
-"""Vertical slice: auth, versions, the release gate, and judge providers."""
+"""Vertical slice: auth, versions, the release gate, judges, and benches."""
 
 import hashlib
 import json
@@ -343,6 +343,7 @@ class SliceTest(unittest.TestCase):
         self.run_agit("release", "red", *auth, "--version", str(red["version_id"]))
         compared = self.run_agit("compare", *auth, "--judge", "fixed")
         self.assertEqual(compared["judge_name"], "fixed")
+        self.assertEqual(compared["max_points"], 18)
         self.assertGreater(int(compared["red_points"]), int(compared["black_points"]))
         gated = self.run_agit("gate", *auth, "--judge", "fixed", "--margin", "0")
         self.assertEqual(gated["judge_name"], "fixed")
@@ -424,6 +425,7 @@ class SliceTest(unittest.TestCase):
             )
             self.assertEqual(gate_status, 200)
             self.assertEqual(http_gate["judge_name"], "fixed")
+            self.assertEqual(http_gate["max_points"], 18)
             self.assertTrue(http_gate["promoted"])
             self.assertEqual(http_gate["black_version_id"], http_red["version_id"])
 
@@ -754,6 +756,200 @@ class SliceTest(unittest.TestCase):
             self.assertEqual(bad_status, 400)
             self.assertIn("error", bad)
 
+    def test_load_bench_reads_fixture_hot_and_a_json_file(self) -> None:
+        for spec, filename in (("fixture", "fixtures.json"), ("hot", "hot_fixtures.json")):
+            loaded = load_bench(spec)
+            raw = json.loads((ROOT / "agit" / filename).read_text(encoding="utf-8"))
+            self.assertEqual(
+                [criterion.criterion_id for criterion in loaded.criteria],
+                [item["id"] for item in raw["rubric"]],
+            )
+            self.assertEqual([criterion.text for criterion in loaded.criteria], [item["text"] for item in raw["rubric"]])
+            self.assertEqual([case.case_id for case in loaded.cases], [item["id"] for item in raw["cases"]])
+            self.assertEqual([case.task for case in loaded.cases], [item["task"] for item in raw["cases"]])
+            self.assertEqual(
+                [case.checks for case in loaded.cases],
+                [{key: tuple(value) for key, value in item["checks"].items()} for item in raw["cases"]],
+            )
+        self.assertEqual(load_bench(), load_bench("fixture"))
+        self.assertEqual(len(load_bench("hot").cases), 2)
+        self.assertNotEqual(load_bench("hot").max_points(), load_bench().max_points())
+
+        original = os.getcwd()
+        self.addCleanup(os.chdir, original)
+        os.chdir(self.temporary.name)
+        Path("fixture").write_text("{not a bench}", encoding="utf-8")
+        Path("hot").write_text("{not a bench}", encoding="utf-8")
+        self.assertEqual(load_bench("fixture"), load_bench())
+        self.assertEqual(len(load_bench("hot").cases), 2)
+
+        with self.assertRaises(AgitError) as unknown:
+            load_bench("no-such-bench")
+        self.assertEqual(unknown.exception.status_code, 400)
+        self.assertIn("unknown bench", unknown.exception.message)
+
+        broken = Path(self.temporary.name) / "broken.json"
+        broken.write_text("{", encoding="utf-8")
+        with self.assertRaises(AgitError) as bad_json:
+            load_bench(str(broken))
+        self.assertEqual(bad_json.exception.status_code, 400)
+
+        wide = Path(self.temporary.name) / "wide.json"
+        wide.write_text(
+            json.dumps(
+                {
+                    "rubric": [{"id": "outcome", "max_points": 5, "text": "Ask for a diff."}],
+                    "cases": [{"id": "one", "task": "Show the diff.", "checks": {"outcome": ["diff"]}}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(AgitError) as bad_points:
+            load_bench(str(wide))
+        self.assertIn("max_points", bad_points.exception.message)
+
+        custom_path = Path(self.temporary.name) / "custom.json"
+        custom_path.write_text(json.dumps(custom_bench_payload()), encoding="utf-8")
+        custom = load_bench(str(custom_path))
+        matched = StubJudge().score_harness(Harness(skill="show the diff", prompt="please"), custom)
+        missed = StubJudge().score_harness(Harness(skill="hello", prompt="world"), custom)
+        self.assertEqual(matched.points, 2)
+        self.assertEqual(matched.max_points, 2)
+        self.assertEqual(missed.points, 0)
+
+    def test_gate_uses_the_selected_bench_score(self) -> None:
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        black = push_version(self.store, project_id, api_key, "hello", "world", "black")
+        bootstrap_black(self.store, project_id, api_key, str(black["version_id"]))
+        red = push_version(self.store, project_id, api_key, "show the diff", "please", "red")
+        mark_red(self.store, project_id, api_key, str(red["version_id"]))
+        hot = load_bench("hot")
+        compared = compare_red_black(self.store, project_id, api_key, FixedJudge(), "hot")
+        self.assertEqual(compared["judge_name"], "fixed")
+        self.assertEqual(compared["max_points"], hot.max_points())
+        self.assertNotEqual(compared["max_points"], load_bench().max_points())
+
+        custom_path = Path(self.temporary.name) / "custom.json"
+        custom_path.write_text(json.dumps(custom_bench_payload()), encoding="utf-8")
+        gated = run_gate(self.store, project_id, api_key, 0.0, StubJudge(), str(custom_path))
+        self.assertTrue(gated["promoted"])
+        self.assertEqual(gated["max_points"], 2)
+        self.assertEqual(gated["red_points"], 2)
+        self.assertEqual(gated["black_points"], 0)
+        self.assertEqual(gated["black_version_id"], red["version_id"])
+        self.assertIsNone(gated["red_version_id"])
+
+    def test_cli_and_http_pass_bench(self) -> None:
+        created = self.run_agit("project", "create", "--name", "demo", "--git-url", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        auth = ["--project", project_id, "--key", api_key]
+        skill_path = Path(self.temporary.name) / "skill.txt"
+        prompt_path = Path(self.temporary.name) / "prompt.txt"
+        skill_path.write_text("aa", encoding="utf-8")
+        prompt_path.write_text("b", encoding="utf-8")
+        black = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--message",
+            "black",
+        )
+        self.run_agit("release", "black", *auth, "--version", str(black["version_id"]))
+        skill_path.write_text("diff", encoding="utf-8")
+        prompt_path.write_text("y", encoding="utf-8")
+        red = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--message",
+            "red",
+        )
+        self.run_agit("release", "red", *auth, "--version", str(red["version_id"]))
+        hot_max = load_bench("hot").max_points()
+        compared = self.run_agit("compare", *auth, "--judge", "fixed", "--bench", "hot")
+        self.assertEqual(compared["max_points"], hot_max)
+        self.assertNotEqual(compared["max_points"], 18)
+
+        unknown = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agit",
+                "--store",
+                str(self.store.path),
+                "compare",
+                *auth,
+                "--judge",
+                "stub",
+                "--bench",
+                "no-such-bench",
+            ],
+            cwd=ROOT,
+            env={key: value for key, value in os.environ.items() if key != "AGIT_JUDGE_API_KEY"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("unknown bench", unknown.stderr)
+
+        custom_path = Path(self.temporary.name) / "custom.json"
+        custom_path.write_text(json.dumps(custom_bench_payload()), encoding="utf-8")
+        with running(build_server("127.0.0.1", 0, self.store.path)) as server:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            hot_status, hot_body = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/compare",
+                {"judge": "fixed", "bench": "hot"},
+                api_key=api_key,
+            )
+            self.assertEqual(hot_status, 200)
+            self.assertEqual(hot_body["max_points"], hot_max)
+            missing_status, missing = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/compare",
+                {"bench": "no-such-bench"},
+                api_key=api_key,
+            )
+            self.assertEqual(missing_status, 400)
+            self.assertIn("unknown bench", str(missing["error"]))
+            typed_status, typed = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/gate",
+                {"bench": 1, "judge": "stub"},
+                api_key=api_key,
+            )
+            self.assertEqual(typed_status, 400)
+            self.assertIn("bench", str(typed["error"]))
+            held_status, held = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/gate",
+                {"margin": 1.1, "judge": "fixed", "bench": "hot"},
+                api_key=api_key,
+            )
+            self.assertEqual(held_status, 200)
+            self.assertFalse(held["promoted"])
+            self.assertEqual(held["max_points"], hot_max)
+            self.assertEqual(held["red_version_id"], red["version_id"])
+        gated = self.run_agit("gate", *auth, "--judge", "stub", "--bench", str(custom_path), "--margin", "0")
+        self.assertTrue(gated["promoted"])
+        self.assertEqual(gated["max_points"], 2)
+        self.assertEqual(gated["red_points"], 2)
+        self.assertEqual(gated["black_points"], 0)
+        self.assertEqual(gated["black_version_id"], red["version_id"])
+
     def run_agit(self, *args: str) -> dict[str, object]:
         completed = subprocess.run(
             [sys.executable, "-m", "agit", "--store", str(self.store.path), *args],
@@ -767,6 +963,21 @@ class SliceTest(unittest.TestCase):
         parsed = json.loads(completed.stdout)
         self.assertIsInstance(parsed, dict)
         return parsed
+
+
+def custom_bench_payload() -> dict[str, object]:
+    return {
+        "rubric": [
+            {"id": "outcome", "max_points": 2, "text": "The harness asks for a diff."},
+        ],
+        "cases": [
+            {
+                "id": "ship_diff",
+                "task": "Change the label and show the diff.",
+                "checks": {"outcome": ["diff"]},
+            },
+        ],
+    }
 
 
 @contextmanager

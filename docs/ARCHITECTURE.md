@@ -4,7 +4,7 @@
 
 ## 分层
 
-依赖方向是 service → biz → data → domain。domain 不依赖其他层。bench 和 judge 在门禁旁边：biz.release 调用它们拿分数，它们不读写 store，也不改 red / black。judge 的接缝是 `Judge.score_harness`；compare 和 gate 不 import 具体厂商。
+依赖方向是 service → biz → data → domain。domain 不依赖其他层。bench 和 judge 在门禁旁边：biz.release 调用它们拿分数，它们不读写 store，也不改 red / black。judge 的接缝是 `Judge.score_harness`；compare 和 gate 不 import 具体厂商。bench 的接缝是 `load_bench(spec)`。`fixture`（默认）与 `hot` 是包内 JSON；其他 spec 若指向一个已存在的文件，则按同一形状解析。biz.release 把得到的 `Bench` 交给 `Judge`，门禁只看返回的分数。
 
 | 层 | 职责 | 在本仓库 |
 | --- | --- | --- |
@@ -12,7 +12,7 @@
 | data | 唯一持久化：JSON 读写和序列化 | `Store` |
 | biz | 业务规则，按能力拆开 | `biz.project` 创建 / 读取 / 鉴权；`biz.version` push / list / get / `version_id_for`；`biz.release` bootstrap / mark red / compare / gate |
 | service | 薄适配。解析参数，调用 biz | `service.api`、`service.cli`、`service.demo` |
-| bench | 题目和 rubric | `agit/fixtures.json` |
+| bench | 题目和 rubric。`load_bench(spec)` 读内置 fixture、内置 hot 样例，或同构 JSON 文件 | `agit/fixtures.json`、`agit/hot_fixtures.json` |
 | judge | 把 harness 打成分数 | `Judge` 协议；实现是 stub、fixed、OpenAI-compatible |
 
 `agit/api.py`、`agit/cli.py`、`agit/demo.py`、`agit/store.py` 是兼容导入。`agit/core.py` 只重新导出上述 biz 函数，并标为 deprecated。入口仍然是 `python -m agit`。
