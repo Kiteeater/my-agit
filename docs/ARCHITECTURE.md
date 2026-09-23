@@ -17,21 +17,19 @@
 
 `agit/api.py`、`agit/cli.py`、`agit/demo.py`、`agit/store.py` 是兼容导入。`agit/core.py` 只重新导出上述 biz 函数，并标为 deprecated。入口仍然是 `python -m agit`。
 
-## 学 macaron-agent 什么
-
-对照 `macaron-agent/src` 的 domain / data / biz / service，只学分层纪律：
+## 分层纪律
 
 - 模型、持久化、业务规则、入口分开。一类变化留在一层。
 - service 不做发布决定。data 不写门禁规则。domain 不碰文件和 HTTP。
 - biz 按能力分文件，而不是一个模块同时管项目、版本和发布。
 
-## 故意不抄什么
+## 明确不做
 
-macaron-agent 里这些东西不属于这条竖切，也不进本仓库：
+这些不属于当前竖切，也不进本仓库：
 
-- Mongo，以及 decorator 生成的 data repo
-- remote 多服务客户端
-- observability（langfuse、trace、指标）
+- 外部数据库，以及生成式 data repo
+- 多服务 remote 客户端
+- observability（trace、指标导出等）
 - MCP、任务队列、多租户
 
 ## Harness 插槽
