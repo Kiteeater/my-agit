@@ -3,7 +3,7 @@
 import math
 from decimal import Decimal
 
-from agit.bench import load_bench
+from agit.bench import FIXTURE_BENCH, load_bench
 from agit.biz.project import authorized_project, project_summary
 from agit.biz.version import require_version
 from agit.data.store import Store, release_dict, utc_now
@@ -64,12 +64,18 @@ def mark_red(store: Store, project_id: str, api_key: str, version_id: str) -> di
     return project_summary(store.update(mutate))
 
 
-def compare_red_black(store: Store, project_id: str, api_key: str, judge: Judge) -> dict[str, object]:
+def compare_red_black(
+    store: Store,
+    project_id: str,
+    api_key: str,
+    judge: Judge,
+    bench: str = FIXTURE_BENCH,
+) -> dict[str, object]:
     project = authorized_project(store.read(), project_id, api_key)
     black, red = live_pair(project)
-    bench = load_bench()
-    black_score = judge.score_harness(black, bench)
-    red_score = judge.score_harness(red, bench)
+    selected_bench = load_bench(bench)
+    black_score = judge.score_harness(black, selected_bench)
+    red_score = judge.score_harness(red, selected_bench)
     return compare_dict(black.version_id, red.version_id, black_score, red_score)
 
 
@@ -79,11 +85,12 @@ def run_gate(
     api_key: str,
     margin: float,
     judge: Judge,
+    bench: str = FIXTURE_BENCH,
 ) -> dict[str, object]:
     """Promote red only when it strictly leads black by at least margin."""
     if math.isnan(margin) or math.isinf(margin) or margin < 0:
         raise AgitError("margin must be a finite number >= 0", 400)
-    report = compare_red_black(store, project_id, api_key, judge)
+    report = compare_red_black(store, project_id, api_key, judge, bench)
     red_points = int(report["red_points"])
     black_points = int(report["black_points"])
     max_points = int(report["max_points"])

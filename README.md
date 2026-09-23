@@ -2,7 +2,7 @@
 
 my-agit is version control for an agent harness, plus a red/black release gate.
 
-A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores a harness. Skill and prompt are the scored text. An optional tool text is stored on the same version when you pass it; the gate does not score the tool. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same fixture benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays.
+A project is bound to a git remote URL. The URL is stored on the project; v0 does not clone it. Each version stores a harness. Skill and prompt are the scored text. An optional tool text is stored on the same version when you pass it; the gate does not score the tool. One version is **black** (live). Another may be **red** (candidate). The gate scores both on the same benchmark and rubric, and promotes red to black only when the candidate leads live by the configured margin. Otherwise black stays. The default bench is the built-in fixture. `--bench` selects the built-in `hot` sample or a JSON file of the same shape.
 
 v0 does not train weights, distill traces, shadow live traffic, or version runtimes, fallbacks, MCP servers, or sandboxes.
 
@@ -51,11 +51,11 @@ The store file defaults to `.agit/store.json` (`--store` or `AGIT_STORE`).
 
 ## Gate
 
-Three fixture cases, three criteria (`instruction_following`, `boundary`, `concreteness`), each 0, 1, or 2. A harness score is those points over the bench maximum (18 in the built-in bench). These are rubric points.
+The default bench has three fixture cases and three criteria (`instruction_following`, `boundary`, `concreteness`), each 0, 1, or 2. A harness score is those points over that bench's maximum (18 for the built-in fixture). These are rubric points. Another bench has its own cases, rubric, and maximum. The gate reads the points only.
 
 Promote when the candidate's points are strictly higher and the lead is at least `margin * max_points`. The default margin is `0`, so a tie stays black. A rejected candidate stays red.
 
-One gate run scores both harnesses with the same judge. The stub looks for phrases listed under `checks` in `agit/fixtures.json`. The HTTP judge scores the rubric text and the case task, and can return different points.
+One gate run scores both harnesses with the same judge and the same bench. The stub looks for phrases listed under `checks`. The fixed judge gives each criterion a length band and ignores the phrases. The HTTP judge scores the rubric text and the case task, and can return different points.
 
 ## Judge environment
 
@@ -69,6 +69,20 @@ One gate run scores both harnesses with the same judge. The stub looks for phras
 
 ```bash
 python3 -m agit gate --judge fixed --margin 0
+```
+
+## Bench
+
+`compare` and `gate` take an optional bench. The default is `fixture` (`agit/fixtures.json`). `agit demo` keeps that default.
+
+- `hot` loads `agit/hot_fixtures.json`. That file is a two-case sample shipped in the repo: the seam for a popular bench, not a replay of a public leaderboard.
+- Any other spec that is an existing file loads that JSON. The shape matches `agit/fixtures.json`: `rubric` and `cases`. Each criterion has `id`, `text`, and `max_points` of 2. Each case has `id`, `task`, and `checks` mapping every criterion id to a non-empty list of phrases.
+
+The names `fixture` and `hot` win over a file of the same name. Anything else that is not an existing file is an error.
+
+```bash
+python3 -m agit compare --judge stub --bench hot
+python3 -m agit gate --judge fixed --bench ./my_bench.json --margin 0
 ```
 
 ## HTTP
@@ -94,14 +108,14 @@ Create body: `{"name": "demo", "git_remote_url": "git@github.com:acme/support-ag
 
 Version body: `{"skill": "...", "prompt": "...", "message": "..."}`. Add `"tool": "..."` to version that surface; omit the field to keep the skill/prompt version.
 
-Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional. `judge` may be `auto`, `stub`, or `fixed`. Compare takes the same `judge` field.
+Gate body: `{"margin": 0, "judge": "stub", "bench": "fixture"}`. All three fields are optional. `judge` may be `auto`, `stub`, or `fixed`. `bench` is `fixture`, `hot`, or a path to bench JSON on the server. Compare takes the same `judge` and `bench` fields.
 
 ## Layout
 
 - `agit/domain/` — Project, Version, Harness, ReleaseEvent
 - `agit/data/` — JSON store and serialization
 - `agit/biz/` — project, version, and release rules
-- `agit/bench/` — fixture bench and rubric (`agit/fixtures.json`)
+- `agit/bench/` — `load_bench`; fixture rubric in `agit/fixtures.json`; hot sample in `agit/hot_fixtures.json`
 - `agit/judge/` — `Judge` protocol; stub, fixed, and OpenAI-compatible implementations
 - `agit/service/` — CLI, HTTP, and demo
 - `agit/core.py`, `agit/store.py`, `agit/api.py`, `agit/cli.py`, `agit/demo.py` — compatibility imports (`agit.core` is deprecated)

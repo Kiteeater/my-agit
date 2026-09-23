@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agit.bench import FIXTURE_BENCH
 from agit.biz.project import create_project, get_project
 from agit.biz.release import bootstrap_black, compare_red_black, list_releases, mark_red, run_gate
 from agit.biz.version import get_version, list_versions, push_version
@@ -100,10 +101,23 @@ def dispatch(
         return 200, mark_red(store, project_id, key, require_string(payload, "version_id"))
     if tail == ["compare"] and method == "POST":
         payload = require_body(body)
-        return 200, compare_red_black(store, project_id, key, make_judge(judge_mode(payload)))
+        return 200, compare_red_black(
+            store,
+            project_id,
+            key,
+            make_judge(judge_mode(payload)),
+            bench_spec(payload),
+        )
     if tail == ["gate"] and method == "POST":
         payload = require_body(body)
-        return 200, run_gate(store, project_id, key, margin_value(payload), make_judge(judge_mode(payload)))
+        return 200, run_gate(
+            store,
+            project_id,
+            key,
+            margin_value(payload),
+            make_judge(judge_mode(payload)),
+            bench_spec(payload),
+        )
     if tail == ["releases"] and method == "GET":
         return 200, list_releases(store, project_id, key)
     if tail in (["versions"], ["black"], ["red"], ["compare"], ["gate"], ["releases"]) or tail == []:
@@ -145,6 +159,15 @@ def judge_mode(body: dict[str, object]) -> str:
     value = body["judge"]
     if not isinstance(value, str):
         raise AgitError("judge must be a string", 400)
+    return value
+
+
+def bench_spec(body: dict[str, object]) -> str:
+    if "bench" not in body:
+        return FIXTURE_BENCH
+    value = body["bench"]
+    if not isinstance(value, str) or value == "":
+        raise AgitError("bench must be a non-empty string", 400)
     return value
 
 
