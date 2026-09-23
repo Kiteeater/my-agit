@@ -1,4 +1,4 @@
-"""Vertical slice: auth, versions, stub gate, HTTP, and the OpenAI-compatible judge."""
+"""Vertical slice: auth, versions, the release gate, and judge providers."""
 
 import hashlib
 import json
@@ -19,7 +19,9 @@ from agit.api import build_server
 from agit.bench import load_bench
 from agit.core import (
     bootstrap_black,
+    compare_red_black,
     create_project,
+    gate_passes,
     get_project,
     list_versions,
     mark_red,
@@ -29,7 +31,7 @@ from agit.core import (
 )
 from agit.demo import example_text
 from agit.domain import Harness
-from agit.judge import AgitError, OpenAIJudge, StubJudge, make_judge
+from agit.judge import AgitError, FixedJudge, OpenAIJudge, StubJudge, make_judge
 from agit.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -233,6 +235,197 @@ class SliceTest(unittest.TestCase):
         with self.assertRaises(AgitError) as negative:
             run_gate(self.store, project_id, api_key, -0.1, judge)
         self.assertEqual(negative.exception.status_code, 400)
+
+    def test_fixed_judge_differs_from_stub_and_gate_keeps_its_rule(self) -> None:
+        bench = load_bench()
+        zero_harness = Harness(skill="aa", prompt="b")
+        lead_harness = Harness(skill="a", prompt="b")
+        half_harness = Harness(skill="ab", prompt="cd")
+        stub = make_judge("stub")
+        fixed = make_judge("fixed")
+        self.assertIsInstance(stub, StubJudge)
+        self.assertIsInstance(fixed, FixedJudge)
+        stub_lead = stub.score_harness(lead_harness, bench)
+        fixed_lead = fixed.score_harness(lead_harness, bench)
+        fixed_again = fixed.score_harness(lead_harness, bench)
+        fixed_zero = fixed.score_harness(zero_harness, bench)
+        fixed_half = fixed.score_harness(half_harness, bench)
+        fixed_with_tool = fixed.score_harness(
+            Harness(skill=lead_harness.skill, prompt=lead_harness.prompt, tool="rename call site"),
+            bench,
+        )
+        self.assertEqual(fixed_lead.judge_name, "fixed")
+        self.assertIsNone(fixed_lead.model)
+        self.assertEqual(fixed_lead.points, fixed_lead.max_points)
+        self.assertEqual(fixed_lead.cases[0].note, "length band 2")
+        self.assertEqual(fixed_again.points, fixed_lead.points)
+        self.assertEqual(fixed_again.cases[0].note, fixed_lead.cases[0].note)
+        self.assertEqual(fixed_with_tool.points, fixed_lead.points)
+        self.assertEqual(fixed_zero.points, 0)
+        self.assertEqual(fixed_zero.cases[0].note, "length band 0")
+        self.assertEqual(fixed_half.points * 2, fixed_half.max_points)
+        self.assertEqual(fixed_half.cases[0].note, "length band 1")
+        self.assertNotEqual(fixed_lead.points, stub_lead.points)
+        self.assertNotEqual(fixed_lead.judge_name, stub_lead.judge_name)
+        self.assertFalse(
+            gate_passes(stub_lead.points, stub.score_harness(zero_harness, bench).points, stub_lead.max_points, 0.0)
+        )
+        with patch.dict(os.environ, {"AGIT_JUDGE_API_KEY": "test-key"}, clear=False):
+            self.assertIsInstance(make_judge("fixed"), FixedJudge)
+            self.assertIsInstance(make_judge("auto"), OpenAIJudge)
+        with self.assertRaises(AgitError) as unknown:
+            make_judge("nope")
+        self.assertEqual(unknown.exception.status_code, 400)
+        self.assertIn("nope", unknown.exception.message)
+
+        created = create_project(self.store, "support-agent", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        black_version = push_version(self.store, project_id, api_key, "aa", "b", "tie black")
+        black_id = str(black_version["version_id"])
+        bootstrap_black(self.store, project_id, api_key, black_id)
+        tie_version = push_version(self.store, project_id, api_key, "a", "bc", "tie red")
+        tie_id = str(tie_version["version_id"])
+        mark_red(self.store, project_id, api_key, tie_id)
+        tie_compare = compare_red_black(self.store, project_id, api_key, fixed)
+        self.assertEqual(tie_compare["judge_name"], "fixed")
+        self.assertEqual(tie_compare["black_points"], 0)
+        self.assertEqual(tie_compare["red_points"], 0)
+        tie_gate = run_gate(self.store, project_id, api_key, 0.0, fixed)
+        self.assertFalse(tie_gate["promoted"])
+        self.assertEqual(tie_gate["judge_name"], "fixed")
+        self.assertEqual(tie_gate["black_version_id"], black_id)
+        self.assertEqual(tie_gate["red_version_id"], tie_id)
+        lead_version = push_version(self.store, project_id, api_key, "a", "b", "lead")
+        lead_id = str(lead_version["version_id"])
+        mark_red(self.store, project_id, api_key, lead_id)
+        lead_gate = run_gate(self.store, project_id, api_key, 0.0, fixed)
+        self.assertTrue(lead_gate["promoted"])
+        self.assertEqual(lead_gate["judge_name"], "fixed")
+        self.assertEqual(lead_gate["black_version_id"], lead_id)
+        self.assertIsNone(lead_gate["red_version_id"])
+
+    def test_cli_and_http_accept_fixed_and_reject_unknown_judge(self) -> None:
+        created = self.run_agit("project", "create", "--name", "demo", "--git-url", GIT_REMOTE_URL)
+        project_id = str(created["project_id"])
+        api_key = str(created["api_key"])
+        auth = ["--project", project_id, "--key", api_key]
+        skill_path = Path(self.temporary.name) / "skill.txt"
+        prompt_path = Path(self.temporary.name) / "prompt.txt"
+        lead_prompt_path = Path(self.temporary.name) / "lead-prompt.txt"
+        skill_path.write_text("aa", encoding="utf-8")
+        prompt_path.write_text("b", encoding="utf-8")
+        lead_prompt_path.write_text("b", encoding="utf-8")
+        black = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(prompt_path),
+            "--message",
+            "black",
+        )
+        self.run_agit("release", "black", *auth, "--version", str(black["version_id"]))
+        skill_path.write_text("a", encoding="utf-8")
+        red = self.run_agit(
+            "version",
+            "push",
+            *auth,
+            "--skill-file",
+            str(skill_path),
+            "--prompt-file",
+            str(lead_prompt_path),
+            "--message",
+            "red",
+        )
+        self.run_agit("release", "red", *auth, "--version", str(red["version_id"]))
+        compared = self.run_agit("compare", *auth, "--judge", "fixed")
+        self.assertEqual(compared["judge_name"], "fixed")
+        self.assertGreater(int(compared["red_points"]), int(compared["black_points"]))
+        gated = self.run_agit("gate", *auth, "--judge", "fixed", "--margin", "0")
+        self.assertEqual(gated["judge_name"], "fixed")
+        self.assertTrue(gated["promoted"])
+        self.assertEqual(gated["black_version_id"], red["version_id"])
+        unknown = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agit",
+                "--store",
+                str(self.store.path),
+                "compare",
+                *auth,
+                "--judge",
+                "nope",
+            ],
+            cwd=ROOT,
+            env={key: value for key, value in os.environ.items() if key != "AGIT_JUDGE_API_KEY"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn("fixed", unknown.stderr)
+
+        with running(build_server("127.0.0.1", 0, self.store.path)) as server:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            missing_status, missing = call(
+                "POST",
+                f"{base}/v1/projects/{project_id}/compare",
+                {"judge": "nope"},
+                api_key=api_key,
+            )
+            self.assertEqual(missing_status, 400)
+            self.assertIn("unknown judge", str(missing["error"]))
+            created_status, http_created = call(
+                "POST",
+                base + "/v1/projects",
+                {"name": "support-agent", "git_remote_url": GIT_REMOTE_URL},
+            )
+            self.assertEqual(created_status, 201)
+            http_project_id = str(http_created["project_id"])
+            http_key = str(http_created["api_key"])
+            black_status, http_black = call(
+                "POST",
+                f"{base}/v1/projects/{http_project_id}/versions",
+                {"skill": "aa", "prompt": "b", "message": "black"},
+                api_key=http_key,
+            )
+            self.assertEqual(black_status, 200)
+            live_status, _live = call(
+                "POST",
+                f"{base}/v1/projects/{http_project_id}/black",
+                {"version_id": http_black["version_id"]},
+                api_key=http_key,
+            )
+            self.assertEqual(live_status, 200)
+            red_status, http_red = call(
+                "POST",
+                f"{base}/v1/projects/{http_project_id}/versions",
+                {"skill": "a", "prompt": "b", "message": "red"},
+                api_key=http_key,
+            )
+            self.assertEqual(red_status, 200)
+            mark_status, _marked = call(
+                "POST",
+                f"{base}/v1/projects/{http_project_id}/red",
+                {"version_id": http_red["version_id"]},
+                api_key=http_key,
+            )
+            self.assertEqual(mark_status, 200)
+            gate_status, http_gate = call(
+                "POST",
+                f"{base}/v1/projects/{http_project_id}/gate",
+                {"margin": 0, "judge": "fixed"},
+                api_key=http_key,
+            )
+            self.assertEqual(gate_status, 200)
+            self.assertEqual(http_gate["judge_name"], "fixed")
+            self.assertTrue(http_gate["promoted"])
+            self.assertEqual(http_gate["black_version_id"], http_red["version_id"])
 
     def test_missing_judge_key_uses_stub_and_http_judge_parses_fenced_json(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

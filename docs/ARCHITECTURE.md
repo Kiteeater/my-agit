@@ -4,7 +4,7 @@
 
 ## 分层
 
-依赖方向是 service → biz → data → domain。domain 不依赖其他层。bench 和 judge 在门禁旁边：biz.release 调用它们拿分数，它们不读写 store，也不改 red / black。
+依赖方向是 service → biz → data → domain。domain 不依赖其他层。bench 和 judge 在门禁旁边：biz.release 调用它们拿分数，它们不读写 store，也不改 red / black。judge 的接缝是 `Judge.score_harness`；compare 和 gate 不 import 具体厂商。
 
 | 层 | 职责 | 在本仓库 |
 | --- | --- | --- |
@@ -13,7 +13,7 @@
 | biz | 业务规则，按能力拆开 | `biz.project` 创建 / 读取 / 鉴权；`biz.version` push / list / get / `version_id_for`；`biz.release` bootstrap / mark red / compare / gate |
 | service | 薄适配。解析参数，调用 biz | `service.api`、`service.cli`、`service.demo` |
 | bench | 题目和 rubric | `agit/fixtures.json` |
-| judge | 把 harness 打成分数 | stub，或 OpenAI-compatible chat completion |
+| judge | 把 harness 打成分数 | `Judge` 协议；实现是 stub、fixed、OpenAI-compatible |
 
 `agit/api.py`、`agit/cli.py`、`agit/demo.py`、`agit/store.py` 是兼容导入。`agit/core.py` 只重新导出上述 biz 函数，并标为 deprecated。入口仍然是 `python -m agit`。
 

@@ -143,8 +143,8 @@ def judge_mode(body: dict[str, object]) -> str:
     if "judge" not in body:
         return "auto"
     value = body["judge"]
-    if not isinstance(value, str) or value not in ("auto", "stub"):
-        raise AgitError("judge must be auto or stub", 400)
+    if not isinstance(value, str):
+        raise AgitError("judge must be a string", 400)
     return value
 
 

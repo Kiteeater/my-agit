@@ -10,7 +10,7 @@ v0 does not train weights, distill traces, shadow live traffic, or version runti
 
 Development guide and phased plan: [docs/ROADMAP.md](docs/ROADMAP.md). Layering: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The judge calls an OpenAI-compatible chat completion. With no API key, a deterministic stub scores the same cases by matching fixture phrases, so the demo and CI run offline.
+The judge is a `Judge` protocol: `score_harness` returns one harness score. `--judge auto` calls an OpenAI-compatible chat completion when `AGIT_JUDGE_API_KEY` is set, and a deterministic stub otherwise. The stub matches fixture phrases, so the demo and CI run offline. `--judge fixed` selects a second offline judge that bands each criterion by the length of skill plus prompt.
 
 ## Run the vertical slice
 
@@ -65,7 +65,11 @@ One gate run scores both harnesses with the same judge. The stub looks for phras
 | `AGIT_JUDGE_API_KEY` | Bearer token. Unset or blank selects the stub when `--judge auto`. |
 | `AGIT_JUDGE_MODEL` | Model name. Default `gpt-4o-mini`. |
 
-`--judge stub` forces the offline judge. `--judge auto` is the default.
+`--judge auto` is the default. `--judge stub` forces the phrase-matching judge. `--judge fixed` forces the length-band judge. The two offline judges ignore `AGIT_JUDGE_API_KEY`.
+
+```bash
+python3 -m agit gate --judge fixed --margin 0
+```
 
 ## HTTP
 
@@ -90,7 +94,7 @@ Create body: `{"name": "demo", "git_remote_url": "git@github.com:acme/support-ag
 
 Version body: `{"skill": "...", "prompt": "...", "message": "..."}`. Add `"tool": "..."` to version that surface; omit the field to keep the skill/prompt version.
 
-Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional.
+Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional. `judge` may be `auto`, `stub`, or `fixed`. Compare takes the same `judge` field.
 
 ## Layout
 
@@ -98,7 +102,7 @@ Gate body: `{"margin": 0, "judge": "stub"}`. Both fields are optional.
 - `agit/data/` — JSON store and serialization
 - `agit/biz/` — project, version, and release rules
 - `agit/bench/` — fixture bench and rubric (`agit/fixtures.json`)
-- `agit/judge/` — offline stub and OpenAI-compatible judge
+- `agit/judge/` — `Judge` protocol; stub, fixed, and OpenAI-compatible implementations
 - `agit/service/` — CLI, HTTP, and demo
 - `agit/core.py`, `agit/store.py`, `agit/api.py`, `agit/cli.py`, `agit/demo.py` — compatibility imports (`agit.core` is deprecated)
 - `examples/` — skill and prompt files used by the demo, and `tool.txt` for an optional tool push

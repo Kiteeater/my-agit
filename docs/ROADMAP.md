@@ -49,10 +49,10 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 
 - 项目：create、绑定 git remote URL、签发 API key。URL 存在项目上；v0 不 clone 该仓库。
 - 版本对象：skill、prompt，以及可选的 tool。只有 skill 和 prompt 时，版本 id 是这两段文本的内容哈希，同一内容再次 push 返回已有版本，JSON 不写 `tool` 键。CLI `--tool-file` 或 HTTP 字段 `tool` 传入非空文本后，tool 进入内容哈希和 JSON。门禁仍只消费分数。
-- 红黑与门禁：`release black` 只引导第一个现役版本，之后 black 只能经 `gate` 改变。内置 fixture bench + rubric；judge 为 stub，或 OpenAI-compatible chat completion（LLM-as-judge）。候选分必须严格更高，且领先不少于配置的 margin，才提升；否则 black 不动，候选保持 red。
+- 红黑与门禁：`release black` 只引导第一个现役版本，之后 black 只能经 `gate` 改变。内置 fixture bench + rubric。评分走 `Judge` 协议：stub、fixed，或 OpenAI-compatible chat completion（LLM-as-judge）。`compare` / `gate` 只消费 `HarnessScore`。候选分必须严格更高，且领先不少于配置的 margin，才提升；否则 black 不动，候选保持 red。
 - 入口：CLI、HTTP、`agit demo`、单元测试。
 
-v0 明确还没有：runtime / fallback / mcp / sandbox 的字段和版本化；OpenAI-compatible 以外的 provider；自定义 bench 或热门 bench；线上 case 回收。
+v0 明确还没有：runtime / fallback / mcp / sandbox 的字段和版本化；自定义 bench 或热门 bench；线上 case 回收。需要网络的 judge 仍只有 OpenAI-compatible 这一家。
 
 ## 阶段
 
@@ -68,11 +68,15 @@ tool 已交付，仍属于这一最小子集，不另开发布路径。CLI `agit
 
 runtime、fallback、mcp、sandbox 仍未做。先做哪一个、各子面的产物形状，均为 **Open**。不要一次把五个子面都版本化。
 
-### 随后 — provider 任意化
+### Done — provider 任意化
 
-在现有 OpenAI-compatible judge 之外，做成可接入的 provider 抽象，使门禁不绑死在一家 chat completion 上。
+门禁不绑在一家 chat completion 上。`Judge` 只要求 `score_harness(harness, bench) -> HarnessScore`。`biz.release` 的 compare / gate 只依赖该协议。stub 继续承担无 key 的 demo 与 CI。
 
-抽象边界、配置方式、除当前这一家以外先接哪一家，均为 **Open**。stub judge 继续承担无 key 的 demo 与 CI。
+三项选择 **已选**：
+
+1. **抽象边界**。协议只有 `score_harness`。厂商实现留在 `agit/judge`。发布规则不 import 它们，身份从 `HarnessScore.judge_name` 读。
+2. **配置方式**。仍用 `make_judge(mode)`。CLI `--judge` 和 HTTP 字段 `judge` 可选 `auto`、`stub`、`fixed`。`auto`：设置了 `AGIT_JUDGE_API_KEY` 时用 OpenAI-compatible，否则 stub。OpenAI 的 base、model、key 仍由环境变量配置。
+3. **第二家**。`fixed`：确定性、无网络。每个准则的分数是 skill 与 prompt 的字符数之和模 3（0、1 或 2），同一文本分数稳定，和 stub 的短语匹配不同。OpenAI-compatible 仍是唯一需要网络和 key 的实现。
 
 ### 随后 — benchmark 插件
 

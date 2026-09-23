@@ -8,9 +8,7 @@ from agit.biz.project import authorized_project, project_summary
 from agit.biz.version import require_version
 from agit.data.store import Store, release_dict, utc_now
 from agit.domain import Project, ReleaseAction, ReleaseEvent, Version
-from agit.judge import AgitError, HarnessScore, OpenAIJudge, StubJudge
-
-Judge = StubJudge | OpenAIJudge
+from agit.judge import AgitError, HarnessScore, Judge
 
 
 def list_releases(store: Store, project_id: str, api_key: str) -> dict[str, object]:
@@ -89,10 +87,14 @@ def run_gate(
     red_points = int(report["red_points"])
     black_points = int(report["black_points"])
     max_points = int(report["max_points"])
+    judge_name = report["judge_name"]
+    model = report["model"]
+    assert isinstance(judge_name, str)
+    assert model is None or isinstance(model, str)
     promoted = gate_passes(red_points, black_points, max_points, margin)
     if promoted:
         detail = (
-            f"promoted by {judge.name}: red {red_points}/{max_points} "
+            f"promoted by {judge_name}: red {red_points}/{max_points} "
             f"vs black {black_points}/{max_points} (margin {margin})"
         )
     else:
@@ -117,8 +119,8 @@ def run_gate(
                 black_version_id=project.black_version_id,
                 red_version_id=project.red_version_id,
                 detail=detail,
-                judge_name=judge.name,
-                model=judge.model,
+                judge_name=judge_name,
+                model=model,
                 red_points=red_points,
                 black_points=black_points,
                 max_points=max_points,
@@ -132,8 +134,8 @@ def run_gate(
         "promoted": promoted,
         "margin": margin,
         "detail": detail,
-        "judge_name": judge.name,
-        "model": judge.model,
+        "judge_name": judge_name,
+        "model": model,
         "black_version_id": project.black_version_id,
         "red_version_id": project.red_version_id,
         "red_points": red_points,
