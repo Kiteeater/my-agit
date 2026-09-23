@@ -26,7 +26,7 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 | --- | --- | --- |
 | skill | 技能文本 | v0 已版本化 |
 | prompt | 提示文本 | v0 已版本化 |
-| harness | tool、runtime、fallback、mcp、sandbox 等子面 | 尚未版本化 |
+| harness | tool、runtime、fallback、mcp、sandbox 等子面 | tool 已版本化；runtime / fallback / mcp / sandbox 未做 |
 
 发布路径：准备候选版本，标成 red，与当前 black 在同一 benchmark、同一 rubric、同一 judge 下评分，再决定是否发布。`compare` 只打分，不改现役；`gate` 才决定是否提升。
 
@@ -48,11 +48,11 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 已经交付的竖切：
 
 - 项目：create、绑定 git remote URL、签发 API key。URL 存在项目上；v0 不 clone 该仓库。
-- 版本对象：现役面仍是 **skill 与 prompt**。版本 id 在只有这两面时是这两段文本的内容哈希；同一对再次 push 返回已有版本。`Harness.tool` 是空插槽：缺省不写入 JSON，也不改变 version_id。tool 的版本化行为还没做。
+- 版本对象：skill、prompt，以及可选的 tool。只有 skill 和 prompt 时，版本 id 是这两段文本的内容哈希，同一内容再次 push 返回已有版本，JSON 不写 `tool` 键。CLI `--tool-file` 或 HTTP 字段 `tool` 传入非空文本后，tool 进入内容哈希和 JSON。门禁仍只消费分数。
 - 红黑与门禁：`release black` 只引导第一个现役版本，之后 black 只能经 `gate` 改变。内置 fixture bench + rubric；judge 为 stub，或 OpenAI-compatible chat completion（LLM-as-judge）。候选分必须严格更高，且领先不少于配置的 margin，才提升；否则 black 不动，候选保持 red。
 - 入口：CLI、HTTP、`agit demo`、单元测试。
 
-v0 明确还没有：tool 的版本化行为（只有空插槽），以及 runtime / fallback / mcp / sandbox 的字段和版本化；OpenAI-compatible 以外的 provider；自定义 bench 或热门 bench；线上 case 回收。
+v0 明确还没有：runtime / fallback / mcp / sandbox 的字段和版本化；OpenAI-compatible 以外的 provider；自定义 bench 或热门 bench；线上 case 回收。
 
 ## 阶段
 
@@ -60,13 +60,13 @@ v0 明确还没有：tool 的版本化行为（只有空插槽），以及 runti
 
 ### Done / v0 — skill + prompt，fixture bench 上的红黑门禁
 
-见上一节。后续阶段在这条竖切上加东西，不重写门禁语义。
+见上一节里的 skill、prompt 与红黑门禁。tool 版本化记在下一节，已经交付。后续阶段在这条竖切上加东西，不重写门禁语义。
 
 ### Next — harness 子面的最小子集
 
-把版本对象从 skill + prompt 扩到 harness 的一个子面，使一次发布可以带上对 agent 有影响的 harness 变更，并仍走同一条红黑对照。模型上已经留了 `Harness.tool` 插槽；这一阶段才实现它的版本化行为，不另开一条发布路径。
+tool 已交付，仍属于这一最小子集，不另开发布路径。CLI `agit version push --tool-file`、HTTP push 的可选字符串 `tool`、demo 里的一次带 tool 的 push，以及对应测试，都调用 `push_version`。省略 tool 时，version_id 和 JSON 与只有 skill、prompt 时相同。门禁仍只消费分数，打分不读 tool。
 
-**建议（非锁定）：先做 tool。** runtime、fallback、mcp、sandbox 后置。先做哪一个之外的子面、各子面的产物形状，均为 **Open**。不要一次把五个子面都版本化。
+runtime、fallback、mcp、sandbox 仍未做。先做哪一个、各子面的产物形状，均为 **Open**。不要一次把五个子面都版本化。
 
 ### 随后 — provider 任意化
 

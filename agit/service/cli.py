@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     push = version_commands.add_parser("push", parents=[auth])
     push.add_argument("--skill-file", required=True)
     push.add_argument("--prompt-file", required=True)
+    push.add_argument("--tool-file")
     push.add_argument("--message", required=True)
     version_commands.add_parser("list", parents=[auth])
     show = version_commands.add_parser("show", parents=[auth])
@@ -83,6 +84,10 @@ def execute(args: argparse.Namespace) -> dict[str, object] | None:
         return create_project(store, args.name, args.git_url)
     project_id, api_key = require_auth(args)
     if args.command == "version" and args.version_command == "push":
+        if args.tool_file is None:
+            tool = None
+        else:
+            tool = read_text(args.tool_file)
         return push_version(
             store,
             project_id,
@@ -90,6 +95,7 @@ def execute(args: argparse.Namespace) -> dict[str, object] | None:
             read_text(args.skill_file),
             read_text(args.prompt_file),
             args.message,
+            tool=tool,
         )
     if args.command == "version" and args.version_command == "list":
         return list_versions(store, project_id, api_key)

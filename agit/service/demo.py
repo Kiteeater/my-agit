@@ -32,6 +32,7 @@ def run_in_store(store_path: Path) -> dict[str, object]:
         example_text("baseline_prompt.md"),
         "baseline harness",
     )
+    assert "tool" not in baseline
     baseline_id = str(baseline["version_id"])
     bootstrap_black(store, project_id, api_key, baseline_id)
     weaker = push_version(
@@ -52,7 +53,9 @@ def run_in_store(store_path: Path) -> dict[str, object]:
         example_text("stronger_skill.md"),
         example_text("stronger_prompt.md"),
         "stronger candidate",
+        tool="echo",
     )
+    assert stronger["tool"] == "echo"
     stronger_id = str(stronger["version_id"])
     mark_red(store, project_id, api_key, stronger_id)
     stronger_gate = run_gate(store, project_id, api_key, 0.0, judge)
@@ -88,6 +91,7 @@ def run_in_store(store_path: Path) -> dict[str, object]:
         },
         "stronger": {
             "version_id": stronger_id,
+            "tool": stronger["tool"],
             "promoted": stronger_gate["promoted"],
             "red_points": stronger_gate["red_points"],
             "black_points": stronger_gate["black_points"],

@@ -34,11 +34,12 @@
 
 ## Harness 插槽
 
-竖切 ≠ 不留插槽。现役面仍是 skill + prompt。`Harness.tool` 默认为 `None`，表示这个面还没出现。
+竖切 ≠ 不留插槽。现役面是 skill、prompt，以及可选的 tool。`Harness.tool` 默认为 `None`，表示这次版本没有这个面。
 
 - 旧 store JSON 只有 `skill` 和 `prompt`。读入时 `tool` 视为缺省。写出时缺省面不写这个键，所以只含 skill / prompt 的版本对象形状不变。
 - `version_id` 只哈希已经出现的面。仅 skill + prompt 时，摘要是 skill 的 UTF-8、一个 NUL、prompt 的 UTF-8 的 SHA-256，与插槽出现之前相同。`tool` 有值时，摘要改为带 `skill` / `prompt` / `tool` 标签的字节，避免和旧编码撞车。
 - `judge.score_harness` 接受 `Version` 或 `Harness`。打分仍只看 skill 和 prompt。
-- CLI 和 HTTP 的 push 仍然只收 skill、prompt、message。`push_version` 另有可选的 `tool` 参数，本包不把它暴露成参数或请求字段。
+- CLI：`agit version push` 可选 `--tool-file`。省略则不传 tool，与以前相同。传入则读取文件文本，交给 `push_version(..., tool=...)`。
+- HTTP：`POST /v1/projects/{id}/versions` 的请求体可选字符串 `tool`。省略则不传 tool。有值则走同一个 `push_version`。
 
 下一个子面沿同一条缝加：domain 上一个缺省字段，出现了才进入 `version_id` 和 JSON，门禁仍只消费分数。runtime、fallback、mcp、sandbox 现在没有字段，也不在本包实现。

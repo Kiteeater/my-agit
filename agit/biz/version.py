@@ -18,7 +18,7 @@ def push_version(
     *,
     tool: str | None = None,
 ) -> dict[str, object]:
-    """Store a harness. tool is optional and is not part of the CLI or HTTP body."""
+    """Store a harness. An omitted tool leaves the skill and prompt version id unchanged."""
     skill_text = require_text(skill, "skill")
     prompt_text = require_text(prompt, "prompt")
     message_text = require_text(message, "message")
