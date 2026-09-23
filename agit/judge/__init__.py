@@ -1,4 +1,7 @@
-"""Score a skill and prompt with the offline stub or an OpenAI-compatible judge."""
+"""Score a harness with the offline stub or an OpenAI-compatible judge.
+
+The live path scores skill and prompt. Other harness slots are ignored.
+"""
 
 import json
 import os
@@ -6,6 +9,7 @@ from dataclasses import dataclass
 from urllib import error, request
 
 from agit.bench import FULL_POINTS, Bench, BenchCase, RubricCriterion
+from agit.domain import Harness, Version, as_harness
 
 ENV_BASE_URL = "AGIT_JUDGE_BASE_URL"
 ENV_API_KEY = "AGIT_JUDGE_API_KEY"
@@ -110,8 +114,9 @@ class StubJudge:
     name = "stub"
     model = None
 
-    def score_harness(self, skill: str, prompt: str, bench: Bench) -> HarnessScore:
-        haystack = (skill + "\n" + prompt).casefold()
+    def score_harness(self, harness: Version | Harness, bench: Bench) -> HarnessScore:
+        body = as_harness(harness)
+        haystack = (body.skill + "\n" + body.prompt).casefold()
         cases = [self.score_case(haystack, case, bench.criteria) for case in bench.cases]
         return HarnessScore(
             judge_name=self.name,
@@ -171,8 +176,9 @@ class OpenAIJudge:
         self.api_key = api_key
         self.model = model
 
-    def score_harness(self, skill: str, prompt: str, bench: Bench) -> HarnessScore:
-        cases = [self.score_case(skill, prompt, case, bench.criteria) for case in bench.cases]
+    def score_harness(self, harness: Version | Harness, bench: Bench) -> HarnessScore:
+        body = as_harness(harness)
+        cases = [self.score_case(body.skill, body.prompt, case, bench.criteria) for case in bench.cases]
         return HarnessScore(
             judge_name=self.name,
             model=self.model,

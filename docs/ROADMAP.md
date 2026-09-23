@@ -34,11 +34,12 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 
 ## 开发规范（长期有效）
 
-先竖向把最简单的路径跑通，再在这条最简单、最朴实的架构上做高内聚、低耦合的开发。
+先竖向把最简单的路径跑通，再在这条最简单、最朴实的架构上做高内聚、低耦合的开发。目录和依赖方向见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 - **一次只扩一条可验收的竖切。** 不做大而全起步。一条竖切要能用现有 CLI 或 HTTP 走完，并有测试。
-- **高内聚。** 一类变化留在一个模块里：版本与发布决策在 core，持久化在 store，题目与 rubric 在 bench，评分在 judge，入口只做 CLI / HTTP。
-- **低耦合。** 新的 harness 子面、provider、benchmark 从现有接缝接入（版本产物、bench、judge）。门禁只消费分数，不认识某一家模型或某一个 bench 的内部细节。不要为了新能力复制第二条发布路径。
+- **竖切 ≠ 不留插槽。** 当前竖切可以只跑 skill + prompt，但版本模型必须能挂上下一个 harness 子面。缺省插槽不改变已有数据、version_id 和门禁语义；某个面出现了，才进入内容哈希。不要等实现子面时再拆掉写死的两个字段。
+- **高内聚。** 一类变化留在一个层里：模型在 domain，持久化在 data，项目 / 版本 / 发布规则在 biz，题目与 rubric 在 bench，评分在 judge，入口只做 CLI / HTTP / demo。
+- **低耦合。** 新的 harness 子面、provider、benchmark 从现有接缝接入（Harness 插槽、bench、judge）。门禁只消费分数，不认识某一家模型或某一个 bench 的内部细节。不要为了新能力复制第二条发布路径。
 - **朴实架构优先。** 在竖切证明价值之前，不引入多租户平台、任务队列、权限体系或其他 SaaS 复杂度。
 - **范围守门。** 训练、Trace Distiller、线上流量影子，都不作为「顺便」做进当前竖切。
 
@@ -47,11 +48,11 @@ my-agit = 「给 Agent 用的 git」：Agent Harness 版本管理 + 红黑发布
 已经交付的竖切：
 
 - 项目：create、绑定 git remote URL、签发 API key。URL 存在项目上；v0 不 clone 该仓库。
-- 版本对象：**只有 skill 与 prompt**。版本 id 是这两段文本的内容哈希；同一对再次 push 返回已有版本。
+- 版本对象：现役面仍是 **skill 与 prompt**。版本 id 在只有这两面时是这两段文本的内容哈希；同一对再次 push 返回已有版本。`Harness.tool` 是空插槽：缺省不写入 JSON，也不改变 version_id。tool 的版本化行为还没做。
 - 红黑与门禁：`release black` 只引导第一个现役版本，之后 black 只能经 `gate` 改变。内置 fixture bench + rubric；judge 为 stub，或 OpenAI-compatible chat completion（LLM-as-judge）。候选分必须严格更高，且领先不少于配置的 margin，才提升；否则 black 不动，候选保持 red。
 - 入口：CLI、HTTP、`agit demo`、单元测试。
 
-v0 明确还没有：tool / runtime / fallback / mcp / sandbox 的版本对象；OpenAI-compatible 以外的 provider；自定义 bench 或热门 bench；线上 case 回收。
+v0 明确还没有：tool 的版本化行为（只有空插槽），以及 runtime / fallback / mcp / sandbox 的字段和版本化；OpenAI-compatible 以外的 provider；自定义 bench 或热门 bench；线上 case 回收。
 
 ## 阶段
 
@@ -63,7 +64,7 @@ v0 明确还没有：tool / runtime / fallback / mcp / sandbox 的版本对象�
 
 ### Next — harness 子面的最小子集
 
-把版本对象从 skill + prompt 扩到 harness 的一个子面，使一次发布可以带上对 agent 有影响的 harness 变更，并仍走同一条红黑对照。
+把版本对象从 skill + prompt 扩到 harness 的一个子面，使一次发布可以带上对 agent 有影响的 harness 变更，并仍走同一条红黑对照。模型上已经留了 `Harness.tool` 插槽；这一阶段才实现它的版本化行为，不另开一条发布路径。
 
 **建议（非锁定）：先做 tool。** runtime、fallback、mcp、sandbox 后置。先做哪一个之外的子面、各子面的产物形状，均为 **Open**。不要一次把五个子面都版本化。
 
